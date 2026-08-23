@@ -1,0 +1,116 @@
+#include "cutter.h"
+#include "core/editor.h"
+#include <core/entrypoint.h>
+#include <data/colors.h>
+
+#define MAX_BLUEPRINT_NAME_SIZE 2048
+
+typedef enum {
+    INDEX_60 = 0,
+    INDEX_80 = 1,
+    INDEX_96 = 2,
+    INDEX_180 = 3,
+    INDEX_360 = 4
+} IndexWheelType;
+
+typedef enum {
+    NO_SYMMETRY = 0,
+    RADIAL_SYMMETRY = 1,
+    DUAL_SYMMETRY = 2,
+    QUAD_SYMMETRY = 3
+} SymmetryType;
+
+typedef struct {
+    float angle;
+    float depth;
+    size_t index;
+    SymmetryType symmetry;
+} Facet;
+DECLARE_ARRLIST(Facet);
+IMPL_ARRLIST(Facet);
+
+static char g_cut_name[MAX_BLUEPRINT_NAME_SIZE] = "Untitled Cut";
+static char* g_index_type_names[5] = { "60", "80", "96", "180", "360" };
+static IndexWheelType g_index_type = INDEX_96;
+static BOOL g_override_geometry = TRUE;
+static BOOL g_pavillion_opened = FALSE;
+static BOOL g_crown_opened = FALSE;
+static ARRLIST_Facet g_pavillion_facets = { 0 };
+static ARRLIST_Facet g_crown_facets = { 0 };
+
+static size_t DropdownSelectIndexWheel(void* data, size_t index, BOOL cancel) {
+    if (index == (size_t)-1) {
+        return (size_t)g_index_type;
+    } else {
+        g_index_type = (IndexWheelType)index;
+    }
+    return index;
+}
+
+static void DrawPavillionSection(size_t width) {
+    UIDrawText("yello");
+}
+
+static void DrawCrownSection(size_t width) {
+    UIDrawText("yello");
+}
+
+static void InitializeCutterPanel() {
+}
+
+static void UpdateCutterPanel(float width, float height) {
+}
+
+static void DrawCutterPanel(float width, float height) {
+    float boxwidth = width - 20 - 160;
+    float boxstride = width - boxwidth - 20;
+    UITextInput("Name", g_cut_name, MAX_BLUEPRINT_NAME_SIZE, width - 20, FALSE);
+    UIDivider(width - 20);
+    UIDrawText("Index Wheel");
+    UIMoveCursor(boxstride, -LINE_HEIGHT);
+    UIDropdownMenu(boxwidth, 5, g_index_type_names, DropdownSelectIndexWheel, NULL);
+    UIDrawText("Override Geometry");
+    UIMoveCursor(boxstride - 2, -LINE_HEIGHT);
+    UICheckbox(&g_override_geometry);
+    UIDrawText("Stats");
+    UIMoveCursor(boxstride + 5, -LINE_HEIGHT + 5);
+    DrawRectangle(UIGetCursor().x - 5, UIGetCursor().y - 2, boxwidth, LINE_HEIGHT * 4 + 4, (Color){ 255, 255, 255, 120 });
+    UIDrawText("L/W/H Ratio: ?/?/?");
+    UIMoveCursor(boxstride + 5, 0);
+    UIDrawText("Preservation: 54.78%%");
+    UIMoveCursor(boxstride + 5, 0);
+    UIDrawText("Facets: 18");
+    UIMoveCursor(boxstride + 5, 0);
+    UIDrawText("Critical RI: 1.56");
+    UIMoveCursor(0, 2);
+    UIDivider(width - 20);
+    UIDropdownSection("Pavillion", width - 20, DrawPavillionSection);
+    UIDropdownSection("Crown", width - 20, DrawCrownSection);
+    UIDivider(width - 20);
+    UIDrawText("Import");
+    UIDrawText("Export");
+    UIDrawText("Save As...");
+}
+
+static void CleanCutterPanel() {
+    ARRLIST_Facet_clear(&g_pavillion_facets);
+    ARRLIST_Facet_clear(&g_crown_facets);
+}
+
+void InjectCutterPanel() {
+    ARRLIST_Panel_add(EditorSharedPanels(), GenerateCutterPanel());
+    EditorDefaultUIConfig()->data[EditorDefaultUIConfig()->size - 1].vine = TRUE;
+    ARRLIST_UIConfig_add(EditorDefaultUIConfig(), (UIConfig){"Cutter", 0.0f, FALSE, FALSE, FALSE, FALSE});
+}
+
+Panel GenerateCutterPanel() {
+	Panel p = { 0 };
+	SetupPanel(&p, "Cutter");
+	p.draw = DrawCutterPanel;
+    p.update = UpdateCutterPanel;
+    p.clean = CleanCutterPanel;
+    p.scrollable = TRUE;
+	return p;
+}
+
+REGISTER_PRELOAD(InjectCutterPanel);
