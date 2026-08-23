@@ -2,6 +2,7 @@
 #include "core/editor.h"
 #include <core/entrypoint.h>
 #include <data/colors.h>
+#include <math.h>
 
 #define MAX_BLUEPRINT_NAME_SIZE 2048
 
@@ -52,6 +53,16 @@ static void DrawPavillionSection(size_t width, void* param) {
         sprintf(nbuffer, "%d.", (int)i + 1);
         UIMoveCursor(20, 0);
         UIDrawText(nbuffer);
+        UIMoveCursor(20 + UITextWidth(nbuffer) + 5, -LINE_HEIGHT);
+        float rads = g_pavillion_facets.data[i].angle * (PI / 180.0f);
+        float llen = 16.0f;
+        float xrot = UIGetCursor().x + llen * cosf(rads);
+        float yrot = UIGetCursor().y + 16 - llen * sinf(rads);
+        DrawLine(UIGetCursor().x, UIGetCursor().y + 16, UIGetCursor().x + llen, UIGetCursor().y + 16, MappedColor(UI_TEXT_COLOR));
+        DrawLine(UIGetCursor().x, UIGetCursor().y + 16, xrot, yrot, MappedColor(UI_TEXT_COLOR));
+        DrawCircleSectorLines((Vector2){ UIGetCursor().x, UIGetCursor().y + 16 }, llen/2.0f, 0.0f, -g_pavillion_facets.data[i].angle, 10, MappedColor(UI_TEXT_COLOR));
+        UIMoveCursor(llen + 5, 0);
+        UIDragFloat(&(g_pavillion_facets.data[i].angle), 0, 90.0f, 0.01f, 50);
     }
     if (UIButton("+", 0)) {
         ARRLIST_Facet_add(&g_pavillion_facets, (Facet){ "", 45.0f, 0.0f, 0, RADIAL_SYMMETRY });
