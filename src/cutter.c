@@ -21,6 +21,7 @@ typedef enum {
 } SymmetryType;
 
 typedef struct {
+    char name[MAX_BLUEPRINT_NAME_SIZE];
     float angle;
     float depth;
     size_t index;
@@ -33,8 +34,6 @@ static char g_cut_name[MAX_BLUEPRINT_NAME_SIZE] = "Untitled Cut";
 static char* g_index_type_names[5] = { "60", "80", "96", "180", "360" };
 static IndexWheelType g_index_type = INDEX_96;
 static BOOL g_override_geometry = TRUE;
-static BOOL g_pavillion_opened = FALSE;
-static BOOL g_crown_opened = FALSE;
 static ARRLIST_Facet g_pavillion_facets = { 0 };
 static ARRLIST_Facet g_crown_facets = { 0 };
 
@@ -47,11 +46,19 @@ static size_t DropdownSelectIndexWheel(void* data, size_t index, BOOL cancel) {
     return index;
 }
 
-static void DrawPavillionSection(size_t width) {
-    UIDrawText("yello");
+static void DrawPavillionSection(size_t width, void* param) {
+    char nbuffer[64] = { 0 };
+    for (size_t i = 0; i < g_pavillion_facets.size; i++) {
+        sprintf(nbuffer, "%d.", (int)i + 1);
+        UIMoveCursor(20, 0);
+        UIDrawText(nbuffer);
+    }
+    if (UIButton("+", 0)) {
+        ARRLIST_Facet_add(&g_pavillion_facets, (Facet){ "", 45.0f, 0.0f, 0, RADIAL_SYMMETRY });
+    }
 }
 
-static void DrawCrownSection(size_t width) {
+static void DrawCrownSection(size_t width, void* param) {
     UIDrawText("yello");
 }
 
@@ -84,8 +91,8 @@ static void DrawCutterPanel(float width, float height) {
     UIDrawText("Critical RI: 1.56");
     UIMoveCursor(0, 2);
     UIDivider(width - 20);
-    UIDropdownSection("Pavillion", width - 20, DrawPavillionSection);
-    UIDropdownSection("Crown", width - 20, DrawCrownSection);
+    UIDropdownSection("Pavillion", width - 20, DrawPavillionSection, NULL);
+    UIDropdownSection("Crown", width - 20, DrawCrownSection, NULL);
     UIDivider(width - 20);
     UIDrawText("Import");
     UIDrawText("Export");
