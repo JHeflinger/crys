@@ -34,6 +34,7 @@ IMPL_ARRLIST(Facet);
 
 static char g_cut_name[MAX_BLUEPRINT_NAME_SIZE] = "Untitled Cut";
 static char* g_index_type_names[5] = { "60", "80", "96", "180", "360" };
+static const size_t g_index_values[5] = { 60, 80, 96, 180, 360 };
 static IndexWheelType g_index_type = INDEX_96;
 static BOOL g_override_geometry = TRUE;
 static ARRLIST_Facet g_pavillion_facets = { 0 };
@@ -46,6 +47,12 @@ static size_t DropdownSelectIndexWheel(void* data, size_t index, BOOL cancel) {
         g_index_type = (IndexWheelType)index;
     }
     return index;
+}
+
+static float IndexToDegree(size_t index) {
+    float fi = (float)index;
+    float wi = (float)g_index_values[(size_t)g_index_type];
+    return (fi / wi) * 360.0f;
 }
 
 static void DrawPavillionSection(size_t width, void* param) {
@@ -79,14 +86,18 @@ static void DrawPavillionSection(size_t width, void* param) {
             UIDrawText("%.3f", g_pavillion_facets.data[i].angle);
         }
         UIMoveCursor(20 + UITextWidth(nbuffer) + 5 + llen + 50 + 10, -LINE_HEIGHT);
-        DrawCircleLinesV((Vector2){ UIGetCursor().x + 10, UIGetCursor().y + 10 }, 4, MappedColor(UI_TEXT_COLOR));
-        
-
-        UIMoveCursor(100, 0);
-        UIDrawText("hey");
+        if (g_pavillion_facets.data[i].index > g_index_values[(size_t)g_index_type]) g_pavillion_facets.data[i].index = g_index_values[(size_t)g_index_type];
+        DrawCircle(UIGetCursor().x + 10, UIGetCursor().y + 10, 5, MappedColor(UI_TEXT_COLOR));
+        DrawRectanglePro((Rectangle){ UIGetCursor().x + 10, UIGetCursor().y + 10, 2, 8 }, (Vector2){ 1, 8 }, IndexToDegree(g_pavillion_facets.data[i].index), MappedColor(UI_TEXT_COLOR));
+        UIMoveCursor(20, 0);
+        if (s_activated == i) {
+            UIDragSize(&(g_pavillion_facets.data[i].index), 1, g_index_values[(size_t)g_index_type], 1, 50);
+        } else {
+            UIDrawText("%d", (int)g_pavillion_facets.data[i].index);
+        }
     }
     if (UIButton("+", 0)) {
-        ARRLIST_Facet_add(&g_pavillion_facets, (Facet){ "", 45.0f, 0.0f, 0, RADIAL_SYMMETRY });
+        ARRLIST_Facet_add(&g_pavillion_facets, (Facet){ "", 45.0f, 0.0f, 1, RADIAL_SYMMETRY });
     }
 }
 
