@@ -2,6 +2,7 @@
 #include "core/editor.h"
 #include <core/entrypoint.h>
 #include <data/colors.h>
+#include <data/input.h>
 #include <math.h>
 
 #define MAX_BLUEPRINT_NAME_SIZE 2048
@@ -49,9 +50,19 @@ static size_t DropdownSelectIndexWheel(void* data, size_t index, BOOL cancel) {
 
 static void DrawPavillionSection(size_t width, void* param) {
     char nbuffer[64] = { 0 };
+    static size_t s_activated = -1;
     for (size_t i = 0; i < g_pavillion_facets.size; i++) {
-        sprintf(nbuffer, "%d.", (int)i + 1);
         UIMoveCursor(20, 0);
+        Vector2 thispos = (Vector2){ UIGetCursor().x + UIGetPosition().x, UIGetCursor().y + UIGetPosition().y };
+        BOOL mhovered = CheckCollisionPointRec(GetMousePosition(), (Rectangle){ thispos.x, thispos.y, width - 20, LINE_HEIGHT});
+        if (mhovered || s_activated == i) {
+            DrawRectangle(UIGetCursor().x, UIGetCursor().y, width - 20, LINE_HEIGHT, 
+                s_activated == i ? 
+                    (Color) {255, 255, 255, 100 } :
+                    (Color){ 255, 255, 255, 150 });
+            if (InputButtonPressed(IK_MOUSELEFT)) s_activated = i;
+        }
+        sprintf(nbuffer, "%d.", (int)i + 1);
         UIDrawText(nbuffer);
         UIMoveCursor(20 + UITextWidth(nbuffer) + 5, -LINE_HEIGHT);
         float rads = g_pavillion_facets.data[i].angle * (PI / 180.0f);
@@ -62,7 +73,17 @@ static void DrawPavillionSection(size_t width, void* param) {
         DrawLine(UIGetCursor().x, UIGetCursor().y + 16, xrot, yrot, MappedColor(UI_TEXT_COLOR));
         DrawCircleSectorLines((Vector2){ UIGetCursor().x, UIGetCursor().y + 16 }, llen/2.0f, 0.0f, -g_pavillion_facets.data[i].angle, 10, MappedColor(UI_TEXT_COLOR));
         UIMoveCursor(llen + 5, 0);
-        UIDragFloat(&(g_pavillion_facets.data[i].angle), 0, 90.0f, 0.01f, 50);
+        if (s_activated == i) {
+            UIDragFloat(&(g_pavillion_facets.data[i].angle), 0, 90.0f, 0.01f, 50);
+        } else {
+            UIDrawText("%.3f", g_pavillion_facets.data[i].angle);
+        }
+        UIMoveCursor(20 + UITextWidth(nbuffer) + 5 + llen + 50 + 10, -LINE_HEIGHT);
+        DrawCircleLinesV((Vector2){ UIGetCursor().x + 10, UIGetCursor().y + 10 }, 4, MappedColor(UI_TEXT_COLOR));
+        
+
+        UIMoveCursor(100, 0);
+        UIDrawText("hey");
     }
     if (UIButton("+", 0)) {
         ARRLIST_Facet_add(&g_pavillion_facets, (Facet){ "", 45.0f, 0.0f, 0, RADIAL_SYMMETRY });
@@ -71,9 +92,6 @@ static void DrawPavillionSection(size_t width, void* param) {
 
 static void DrawCrownSection(size_t width, void* param) {
     UIDrawText("yello");
-}
-
-static void InitializeCutterPanel() {
 }
 
 static void UpdateCutterPanel(float width, float height) {
