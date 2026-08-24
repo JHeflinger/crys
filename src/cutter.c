@@ -8,6 +8,9 @@
 #include <math.h>
 
 #define MAX_BLUEPRINT_NAME_SIZE 2048
+#define CUT_EPSILON 0.000001f
+#define CUT_MAX_VERTICES 4096
+#define CUT_MAX_FACE_VERTS 512
 
 typedef enum {
     INDEX_60 = 0,
@@ -29,12 +32,42 @@ typedef struct {
     float distance;
 } CutterPlane;
 
+typedef enum {
+    CUT_OUTSIDE,
+    CUT_INSIDE,
+    CUT_ON_PLANE
+} CutterClassification;
+
 typedef struct {
-    vec3 v[3];
+    vec3 position;
+} CutterVertex;
+DECLARE_ARRLIST(CutterVertex);
+IMPL_ARRLIST(CutterVertex);
+
+typedef struct {
+    size_t count;
+    size_t vertices[CUT_MAX_FACE_VERTS];
     MaterialID material;
-} CutterTriangle;
-DECLARE_ARRLIST(CutterTriangle);
-IMPL_ARRLIST(CutterTriangle);
+} CutterFace;
+DECLARE_ARRLIST(CutterFace);
+IMPL_ARRLIST(CutterFace);
+
+typedef struct {
+    size_t a;
+    size_t b;
+} CutterEdgeKey;
+
+typedef struct {
+    CutterEdgeKey edge;
+    size_t vertex;
+} CutterIntersection;
+DECLARE_ARRLIST(CutterIntersection);
+IMPL_ARRLIST(CutterIntersection);
+
+typedef struct {
+    ARRLIST_CutterVertex vertices;
+    ARRLIST_CutterFace faces;
+} CutterMesh;
 
 typedef struct {
     char name[MAX_BLUEPRINT_NAME_SIZE];
@@ -55,24 +88,6 @@ static BOOL g_override_geometry = TRUE;
 static ARRLIST_Facet g_pavillion_facets = { 0 };
 static ARRLIST_Facet g_crown_facets = { 0 };
 static BOOL g_edited = FALSE;
-
-static float CutterPlaneDistance(CutterPlane plane, vec3 p) {
-    return glm_vec3_dot(plane.normal, p) - plane.distance;
-}
-
-static void CutterPlaneIntersection(CutterPlane plane, vec3 p1, vec3 p2, vec3 out) {
-    float d1 = CutterPlaneDistance(plane, p1);
-    float d2 = CutterPlaneDistance(plane, p2);
-    float denom = d1 - d2;
-    if (fabsf(denom) < 0.000001f) {
-        glm_vec3_copy(p1, out);
-        return;
-    }
-    float t = d1 / denom;
-    glm_vec3_sub(p2, p1, out);
-    glm_vec3_scale(out, t, out);
-    glm_vec3_add(p1, out, out);
-}
 
 static size_t DropdownSelectIndexWheel(void* data, size_t index, BOOL cancel) {
     if (index == (size_t)-1) {
@@ -99,10 +114,6 @@ static float IndexToDegree(size_t index) {
     float fi = (float)index;
     float wi = (float)g_index_values[(size_t)g_index_type];
     return (fi / wi) * 360.0f;
-}
-
-static float IndexToRadians(size_t index) {
-    return IndexToDegree(index) * (PI / 180.0f);
 }
 
 static void DrawAddFacetButton(ARRLIST_Facet* list, size_t index) {
@@ -280,146 +291,239 @@ static void DrawCrownSection(size_t width, void* param) {
     UIMoveCursor(-10, LINE_HEIGHT);
 }
 
-static size_t CutterClipTriangle(CutterPlane plane, const CutterTriangle* triangle, vec3 out[4]) {
-    size_t count = 0;
-    vec3* input = (vec3*)triangle->v;
-    for (size_t i = 0; i < 3; i++) {
-        vec3 a;
-        vec3 b;
-        glm_vec3_copy(input[i], a);
-        glm_vec3_copy(input[(i + 1) % 3], b);
-        float da = CutterPlaneDistance(plane, a);
-        float db = CutterPlaneDistance(plane, b);
-        BOOL a_inside = da <= 0.000001f;
-        BOOL b_inside = db <= 0.000001f;
+static float CutterPlaneDistance(CutterPlane plane, vec3 p) {
+    return glm_vec3_dot(plane.normal, p) - plane.distance;
+}
+
+static size_t CutterAddVertex(CutterMesh* mesh, vec3 position) {
+    EZ_ASSERT(mesh->vertices.size < CUT_MAX_VERTICES, "Cutter vertex limit exceeded");
+    CutterVertex vertex;
+    glm_vec3_copy(position, vertex.position);
+    size_t id = mesh->vertices.size;
+    ARRLIST_CutterVertex_add(&mesh->vertices, vertex);
+    return id;
+}
+
+
+static size_t CutterAddFace(CutterMesh* mesh, const size_t* vertices, size_t count, MaterialID material) {
+    EZ_ASSERT(count >= 3, "Cannot create cutter face with fewer than 3 vertices");
+    EZ_ASSERT(count <= CUT_MAX_FACE_VERTS, "Cutter face vertex limit exceeded");
+    CutterFace face = { 0 };
+    face.count = count;
+    face.material = material;
+    for (size_t i = 0; i < count; i++)
+        face.vertices[i] = vertices[i];
+    size_t id = mesh->faces.size;
+    ARRLIST_CutterFace_add(&mesh->faces, face);
+    return id;
+}
+
+
+static void CutterClearMesh(CutterMesh* mesh) {
+    ARRLIST_CutterVertex_clear(&mesh->vertices);
+    ARRLIST_CutterFace_clear(&mesh->faces);
+}
+
+static void CutterCanonicalEdge(size_t a, size_t b, CutterEdgeKey* out) {
+    if (a < b) {
+        out->a = a;
+        out->b = b;
+    } else {
+        out->a = b;
+        out->b = a;
+    }
+}
+
+
+static BOOL CutterFindIntersection(ARRLIST_CutterIntersection* intersections, CutterEdgeKey edge, size_t* vertex) {
+    for (size_t i = 0; i < intersections->size; i++) {
+        CutterIntersection* intersection = &intersections->data[i];
+        if (intersection->edge.a == edge.a && intersection->edge.b == edge.b) {
+            *vertex = intersection->vertex;
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+
+static size_t CutterGetIntersection(CutterMesh* mesh, ARRLIST_CutterIntersection* intersections, CutterPlane plane, size_t a, size_t b) {
+    CutterEdgeKey edge;
+    CutterCanonicalEdge(a, b, &edge);
+    size_t existing;
+    if (CutterFindIntersection(intersections, edge, &existing)) return existing;
+    vec3 pa;
+    vec3 pb;
+    glm_vec3_copy(mesh->vertices.data[a].position, pa);
+    glm_vec3_copy(mesh->vertices.data[b].position, pb);
+    float da = glm_vec3_dot(plane.normal, pa) - plane.distance;
+    float db = glm_vec3_dot(plane.normal, pb) - plane.distance;
+    float denominator = da - db;
+    vec3 position;
+    if (fabsf(denominator) < CUT_EPSILON) {
+        if (fabsf(da) < fabsf(db)) glm_vec3_copy(pa, position);
+        else glm_vec3_copy(pb, position);
+    } else {
+        float t = da / denominator;
+        glm_vec3_sub(pb, pa, position);
+        glm_vec3_scale(position, t, position);
+        glm_vec3_add(pa, position, position);
+    }
+    size_t id = CutterAddVertex(mesh, position);
+    CutterIntersection intersection = { edge, id };
+    ARRLIST_CutterIntersection_add(intersections, intersection);
+    return id;
+}
+
+static CutterClassification CutterClassify(CutterPlane plane, vec3 position) {
+    float distance = CutterPlaneDistance(plane, position);
+    if (distance > CUT_EPSILON) return CUT_OUTSIDE;
+    if (distance < -CUT_EPSILON) return CUT_INSIDE;
+    return CUT_ON_PLANE;
+}
+
+static size_t CutterClipFace(CutterMesh* mesh, CutterFace* face, CutterPlane plane, ARRLIST_CutterIntersection* intersections, size_t* output) {
+    size_t output_count = 0;
+    for (size_t i = 0; i < face->count; i++) {
+        size_t a = face->vertices[i];
+        size_t b = face->vertices[(i + 1) % face->count];
+        vec3 pa;
+        vec3 pb;
+        glm_vec3_copy(mesh->vertices.data[a].position, pa);
+        glm_vec3_copy(mesh->vertices.data[b].position, pb);
+        CutterClassification ca = CutterClassify(plane, pa);
+        CutterClassification cb = CutterClassify(plane, pb);
+        BOOL a_inside = ca != CUT_OUTSIDE;
+        BOOL b_inside = cb != CUT_OUTSIDE;
         if (a_inside && b_inside) {
-            glm_vec3_copy(b, out[count++]);
-        }
-        else if (a_inside && !b_inside) {
-            CutterPlaneIntersection(plane, a, b, out[count++]);
-        }
-        else if (!a_inside && b_inside) {
-            CutterPlaneIntersection(plane, a, b, out[count++]);
-            glm_vec3_copy(b, out[count++]);
+            output[output_count++] = b;
+        } else if (a_inside && !b_inside) {
+            size_t intersection = CutterGetIntersection(mesh, intersections, plane, a, b);
+            output[output_count++] = intersection;
+        } else if (!a_inside && b_inside) {
+            size_t intersection = CutterGetIntersection(mesh, intersections, plane, a, b);
+            output[output_count++] = intersection;
+            output[output_count++] = b;
         }
     }
-    return count;
+    size_t compact_count = 0;
+    for (size_t i = 0; i < output_count; i++) {
+        if (compact_count > 0 && output[compact_count - 1] == output[i]) continue;
+        output[compact_count++] = output[i];
+    }
+    if (compact_count >= 2 && output[0] == output[compact_count - 1]) compact_count--;
+    return compact_count;
+}
+
+static BOOL CutterContainsVertex(size_t* vertices, size_t count, size_t vertex) {
+    for (size_t i = 0; i < count; i++) {
+        if (vertices[i] == vertex) return TRUE;
+    }
+    return FALSE;
 }
 
 
-static int CutterAddUniquePoint(vec3* points, int count, int max_points, vec3 point) {
-    const float epsilon = 0.00001f;
-    for (int i = 0; i < count; i++) {
-        vec3 d;
-        glm_vec3_sub(points[i], point, d);
-        if (glm_vec3_norm2(d) < epsilon * epsilon)
-            return count;
-    }
-    if (count < max_points) {
-        glm_vec3_copy(point, points[count]);
-        return count + 1;
-    }
-    return count;
+static void CutterAddCapVertex(CutterMesh* mesh, CutterPlane plane, size_t* cap_vertices, size_t* cap_count, size_t vertex) {
+    if (CutterContainsVertex(cap_vertices, *cap_count, vertex)) return;
+    vec3 position;
+    glm_vec3_copy(mesh->vertices.data[vertex].position, position);
+    if (fabsf(CutterPlaneDistance(plane, position)) > CUT_EPSILON) return;
+    EZ_ASSERT(*cap_count < CUT_MAX_FACE_VERTS, "Cutter cap vertex limit exceeded");
+    cap_vertices[(*cap_count)++] = vertex;
 }
 
-
-static void CutterSortPoints(vec3* points, int count, vec3 normal) {
-    if (count < 3)
-        return;
+static void CutterSortCapVertices(CutterMesh* mesh, CutterPlane plane, size_t* vertices, size_t count) {
+    if (count < 3) return;
     vec3 reference = { 0.0f, 1.0f, 0.0f };
-    if (fabsf(glm_vec3_dot(normal, reference)) > 0.9f) {
+    if (fabsf(glm_vec3_dot(reference, plane.normal)) > 0.9f) {
         reference[0] = 1.0f;
         reference[1] = 0.0f;
         reference[2] = 0.0f;
     }
     vec3 axis_x;
     vec3 axis_y;
-    glm_vec3_cross(reference, normal, axis_x);
+    glm_vec3_cross(reference, plane.normal, axis_x);
     glm_vec3_normalize(axis_x);
-    glm_vec3_cross(normal, axis_x, axis_y);
+    glm_vec3_cross(plane.normal, axis_x, axis_y);
     glm_vec3_normalize(axis_y);
     vec3 center = { 0.0f, 0.0f, 0.0f };
-    for (int i = 0; i < count; i++)
-        glm_vec3_add(center, points[i], center);
+    for (size_t i = 0; i < count; i++) {
+        glm_vec3_add(center,mesh->vertices.data[vertices[i]].position, center);
+    }
     glm_vec3_scale(center, 1.0f / (float)count, center);
-    for (int i = 1; i < count; i++) {
-        vec3 key;
-        glm_vec3_copy(points[i], key);
+    for (size_t i = 1; i < count; i++) {
+        size_t key = vertices[i];
         vec3 d;
-        glm_vec3_sub(key, center, d);
-        float key_angle = atan2f(
-            glm_vec3_dot(d, axis_y),
-            glm_vec3_dot(d, axis_x));
-        int j = i - 1;
-        while (j >= 0) {
-            vec3 dj;
-            glm_vec3_sub(points[j], center, dj);
-            float angle_j = atan2f(
-                glm_vec3_dot(dj, axis_y),
-                glm_vec3_dot(dj, axis_x));
-            if (angle_j <= key_angle)
-                break;
-            glm_vec3_copy(points[j], points[j + 1]);
+        glm_vec3_sub(mesh->vertices.data[key].position, center, d);
+        float key_angle = atan2f(glm_vec3_dot(d, axis_y), glm_vec3_dot(d, axis_x));
+        size_t j = i;
+        while (j > 0) {
+            size_t previous = vertices[j - 1];
+            glm_vec3_sub(mesh->vertices.data[previous].position, center, d);
+            float previous_angle = atan2f(glm_vec3_dot(d, axis_y), glm_vec3_dot(d, axis_x));
+            if (previous_angle <= key_angle) break;
+            vertices[j] = vertices[j - 1];
             j--;
         }
-        glm_vec3_copy(key, points[j + 1]);
+        vertices[j] = key;
     }
 }
 
-
-static void CutterClipMesh(ARRLIST_CutterTriangle* mesh, CutterPlane plane) {
-    ARRLIST_CutterTriangle result = { 0 };
-    vec3 cut_points[256];
-    int cut_point_count = 0;
-    for (size_t i = 0; i < mesh->size; i++) {
-        CutterTriangle* triangle = &mesh->data[i];
-        vec3 polygon[4];
-        size_t count = CutterClipTriangle(plane, triangle, polygon);
-        if (count >= 3) {
-            for (size_t j = 1; j + 1 < count; j++) {
-                CutterTriangle out = { 0 };
-                glm_vec3_copy(polygon[0], out.v[0]);
-                glm_vec3_copy(polygon[j], out.v[1]);
-                glm_vec3_copy(polygon[j + 1], out.v[2]);
-                out.material = triangle->material;
-                ARRLIST_CutterTriangle_add(&result, out);
-            }
+static void CutterCutPlane(CutterMesh* mesh, CutterPlane plane) {
+    ARRLIST_CutterIntersection intersections = { 0 };
+    ARRLIST_CutterFace new_faces = { 0 };
+    size_t cap_vertices[CUT_MAX_FACE_VERTS];
+    size_t cap_count = 0;
+    for (size_t i = 0; i < mesh->faces.size; i++) {
+        CutterFace* face = &mesh->faces.data[i];
+        size_t clipped[CUT_MAX_FACE_VERTS + 1];
+        size_t clipped_count = CutterClipFace(mesh, face, plane, &intersections, clipped);
+        if (clipped_count < 3) continue;
+        CutterFace new_face = { 0 };
+        new_face.count = clipped_count;
+        new_face.material = face->material;
+        for (size_t j = 0; j < clipped_count; j++) {
+            new_face.vertices[j] = clipped[j];
+            CutterAddCapVertex(mesh, plane, cap_vertices, &cap_count, clipped[j]);
         }
-        for (int edge = 0; edge < 3; edge++) {
-            vec3 a;
-            vec3 b;
-            glm_vec3_copy(triangle->v[edge], a);
-            glm_vec3_copy(triangle->v[(edge + 1) % 3], b);
-            float da = CutterPlaneDistance(plane, a);
-            float db = CutterPlaneDistance(plane, b);
-            if (fabsf(da) < 0.00001f) {
-                cut_point_count = CutterAddUniquePoint(cut_points, cut_point_count, 256, a);
-            }
-            if ((da < 0.0f && db > 0.0f) ||
-                (da > 0.0f && db < 0.0f)) {
-                vec3 intersection;
-                CutterPlaneIntersection(plane, a, b, intersection);
-                cut_point_count = CutterAddUniquePoint(cut_points, cut_point_count, 256, intersection);
-            }
-        }
+        ARRLIST_CutterFace_add(&new_faces, new_face);
     }
-    if (cut_point_count >= 3) {
-        CutterSortPoints(cut_points, cut_point_count, plane.normal);
-        for (int i = 1; i < cut_point_count - 1; i++) {
-            CutterTriangle cap = { 0 };
-            glm_vec3_copy(cut_points[0], cap.v[0]);
-            glm_vec3_copy(cut_points[i + 1], cap.v[1]);
-            glm_vec3_copy(cut_points[i], cap.v[2]);
-            cap.material = 0;
-            ARRLIST_CutterTriangle_add(&result, cap);
+    if (cap_count >= 3) {
+        CutterSortCapVertices(mesh, plane, cap_vertices, cap_count);
+        CutterFace cap = { 0 };
+        cap.count = cap_count;
+        for (size_t i = 0; i < cap_count; i++) {
+            cap.vertices[i] = cap_vertices[i];
         }
+        cap.material = 0;
+        vec3 a;
+        vec3 b;
+        vec3 c;
+        glm_vec3_copy(mesh->vertices.data[cap.vertices[0]].position, a);
+        glm_vec3_copy(mesh->vertices.data[cap.vertices[1]].position, b);
+        glm_vec3_copy(mesh->vertices.data[cap.vertices[2]].position, c);
+        vec3 ab;
+        vec3 ac;
+        vec3 normal;
+        glm_vec3_sub(b, a, ab);
+        glm_vec3_sub(c, a, ac);
+        glm_vec3_cross(ab, ac, normal);
+        if (glm_vec3_dot(normal, plane.normal) > 0.0f) {
+            for (size_t i = 0; i < cap_count / 2; i++) {
+                size_t temp = cap.vertices[i];
+                cap.vertices[i] = cap.vertices[cap_count - 1 - i];
+                cap.vertices[cap_count - 1 - i] = temp;
+            }
+        }
+        ARRLIST_CutterFace_add(&new_faces, cap);
     }
-    ARRLIST_CutterTriangle_clear(mesh);
-    *mesh = result;
+    ARRLIST_CutterFace_clear(&mesh->faces);
+    mesh->faces = new_faces;
+    ARRLIST_CutterIntersection_clear(&intersections);
 }
 
-static void CutterCreateCube(ARRLIST_CutterTriangle* mesh) {
-    vec3 v[8] = {
+static void CutterCreateCube(CutterMesh* mesh) {
+    vec3 positions[8] = {
         { -1.0f, -1.0f, -1.0f },
         { -1.0f,  1.0f, -1.0f },
         {  1.0f,  1.0f, -1.0f },
@@ -429,33 +533,21 @@ static void CutterCreateCube(ARRLIST_CutterTriangle* mesh) {
         {  1.0f,  1.0f,  1.0f },
         {  1.0f, -1.0f,  1.0f }
     };
-    size_t faces[][3] = {
-        { 3, 1, 0 },
-        { 3, 2, 1 },
-        { 2, 5, 1 },
-        { 2, 6, 5 },
-        { 7, 2, 3 },
-        { 7, 6, 2 },
-        { 3, 0, 4 },
-        { 4, 7, 3 },
-        { 5, 6, 7 },
-        { 7, 4, 5 },
-        { 0, 1, 5 },
-        { 5, 4, 0 }
+    for (size_t i = 0; i < 8; i++) CutterAddVertex(mesh, positions[i]);
+    size_t faces[6][4] = {
+        { 0, 3, 2, 1 },
+        { 4, 5, 6, 7 },
+        { 0, 1, 5, 4 },
+        { 3, 7, 6, 2 },
+        { 0, 4, 7, 3 },
+        { 1, 2, 6, 5 }
     };
-    for (size_t i = 0; i < 12; i++) {
-        CutterTriangle triangle = { 0 };
-        glm_vec3_copy(v[faces[i][0]], triangle.v[0]);
-        glm_vec3_copy(v[faces[i][1]], triangle.v[1]);
-        glm_vec3_copy(v[faces[i][2]], triangle.v[2]);
-        triangle.material = 0;
-        ARRLIST_CutterTriangle_add(mesh, triangle);
-    }
+    for (size_t i = 0; i < 6; i++) CutterAddFace(mesh, faces[i], 4, 0);
 }
 
 static CutterPlane CutterMakePlane(const Facet* facet, BOOL pavilion, size_t index) {
-    float theta = IndexToRadians(index);
-    float angle = facet->angle * (PI / 180.0f);
+    float theta = IndexToDegree(index) * (PI / 180.0f);
+    float angle = (90.0f - facet->angle) * (PI / 180.0f);
     float radial = cosf(angle);
     float vertical = sinf(angle);
     CutterPlane plane = { 0 };
@@ -467,42 +559,41 @@ static CutterPlane CutterMakePlane(const Facet* facet, BOOL pavilion, size_t ind
     return plane;
 }
 
-static void CutterAddUniqueIndex(size_t* indices, size_t* count, size_t max, size_t index, size_t wheel) {
+static void CutterAddUniqueIndex(size_t* indices, size_t* count, size_t index, size_t wheel) {
     index %= wheel;
     for (size_t i = 0; i < *count; i++) {
         if (indices[i] == index) return;
     }
-    if (*count < max) indices[(*count)++] = index;
+    indices[(*count)++] = index;
 }
 
-static size_t CutterFacetIndices(const Facet* facet, size_t out[512]) {
+static size_t CutterFacetIndices(const Facet* facet, size_t* output) {
     size_t wheel = g_index_values[(size_t)g_index_type];
     size_t count = 0;
-    size_t base = facet->index % wheel;
+    size_t index = facet->index % wheel;
     switch (facet->symmetry) {
         case NO_SYMMETRY:
-            CutterAddUniqueIndex(out, &count, 512, base, wheel);
+            CutterAddUniqueIndex(output, &count, index, wheel);
             break;
-        case RADIAL_SYMMETRY: {
-            if (base == 0) {
-                CutterAddUniqueIndex(out, &count, 512, 0, wheel);
+        case RADIAL_SYMMETRY:
+            if (index == 0) {
+                CutterAddUniqueIndex(output, &count, 0, wheel);
                 break;
             }
-            for (size_t i = base; i <= wheel; i += base) {
-                CutterAddUniqueIndex(out, &count, 512, i, wheel);
+            for (size_t i = index; i <= wheel; i += index) {
+                CutterAddUniqueIndex(output, &count, i, wheel);
             }
             break;
-        }
         case DUAL_SYMMETRY:
-            CutterAddUniqueIndex(out, &count, 512, base, wheel);
-            CutterAddUniqueIndex(out, &count, 512, (wheel - base) % wheel, wheel);
+            CutterAddUniqueIndex(output, &count, index, wheel);
+            CutterAddUniqueIndex(output, &count, (wheel - index) % wheel, wheel);
             break;
         case QUAD_SYMMETRY: {
             size_t half = wheel / 2;
-            CutterAddUniqueIndex(out, &count, 512, base, wheel);
-            CutterAddUniqueIndex(out, &count, 512, (wheel - base) % wheel, wheel);
-            CutterAddUniqueIndex(out, &count, 512, (base + half) % wheel, wheel);
-            CutterAddUniqueIndex(out, &count, 512, (half + wheel - base) % wheel, wheel);
+            CutterAddUniqueIndex(output, &count, index, wheel);
+            CutterAddUniqueIndex(output, &count, (wheel - index) % wheel, wheel);
+            CutterAddUniqueIndex(output, &count, (index + half) % wheel, wheel);
+            CutterAddUniqueIndex(output, &count, (half + wheel - index) % wheel, wheel);
             break;
         }
         default:
@@ -511,50 +602,49 @@ static size_t CutterFacetIndices(const Facet* facet, size_t out[512]) {
     return count;
 }
 
-static void CutterApplyFacets(ARRLIST_CutterTriangle* mesh, ARRLIST_Facet* facets, BOOL pavilion) {
+static void CutterApplyFacets(CutterMesh* mesh, ARRLIST_Facet* facets, BOOL pavilion) {
+    size_t indices[512];
     for (size_t i = 0; i < facets->size; i++) {
         Facet* facet = &facets->data[i];
-        size_t indices[512];
-        size_t index_count = CutterFacetIndices(facet, indices);
-        for (size_t j = 0; j < index_count; j++) {
+        size_t count = CutterFacetIndices(facet, indices);
+        for (size_t j = 0; j < count; j++) {
             CutterPlane plane = CutterMakePlane(facet, pavilion, indices[j]);
-            CutterClipMesh(mesh, plane);
+            CutterCutPlane(mesh, plane);
         }
     }
 }
 
-static void CutterSubmitMesh(ARRLIST_CutterTriangle* mesh) {
+static void CutterSubmitMesh(CutterMesh* mesh) {
     ClearTriangles();
     ClearVertices();
     ClearNormals();
     ClearMeshDescriptors();
     size_t vertex_base = NumVertices();
     size_t triangle_base = NumTriangles();
-    for (size_t i = 0; i < mesh->size; i++) {
-        CutterTriangle* triangle = &mesh->data[i];
-        SubmitVertex(triangle->v[0]);
-        SubmitVertex(triangle->v[1]);
-        SubmitVertex(triangle->v[2]);
-        VertexID base = vertex_base + (VertexID)(i * 3);
-        SubmitTriangle((Triangle){
-            base + 0,
-            base + 1,
-            base + 2,
-            (uint32_t)-1,
-            (uint32_t)-1,
-            (uint32_t)-1,
-            triangle->material
-        });
+    for (size_t i = 0; i < mesh->vertices.size; i++) {
+        SubmitVertex(mesh->vertices.data[i].position);
     }
-
-    if (mesh->size > 0) {
+    for (size_t i = 0; i < mesh->faces.size; i++) {
+        CutterFace* face = &mesh->faces.data[i];
+        for (size_t j = 1; j + 1 < face->count; j++) {
+            VertexID a = vertex_base + face->vertices[0];
+            VertexID b = vertex_base + face->vertices[j];
+            VertexID c = vertex_base + face->vertices[j + 1];
+            SubmitTriangle((Triangle){
+                a, b, c,
+                (VertexID)-1,
+                (VertexID)-1,
+                (VertexID)-1,
+                face->material
+            });
+        }
+    }
+    if (mesh->vertices.size > 0 && mesh->faces.size > 0) {
         vec3 min = { FLT_MAX, FLT_MAX, FLT_MAX };
         vec3 max = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
-        for (size_t i = 0; i < mesh->size; i++) {
-            for (size_t j = 0; j < 3; j++) {
-                glm_vec3_minv(min, mesh->data[i].v[j], min);
-                glm_vec3_maxv(max, mesh->data[i].v[j], max);
-            }
+        for (size_t i = 0; i < mesh->vertices.size; i++) {
+            glm_vec3_minv(min, mesh->vertices.data[i].position, min);
+            glm_vec3_maxv(max, mesh->vertices.data[i].position, max);
         }
         vec3 center;
         vec3 extents;
@@ -566,7 +656,7 @@ static void CutterSubmitMesh(ARRLIST_CutterTriangle* mesh) {
             (MeshDescriptor){
                 FALSE,
                 vertex_base,
-                NumVertices() - 1,
+                vertex_base + mesh->vertices.size - 1,
                 triangle_base,
                 NumTriangles() - 1,
                 0,
@@ -588,12 +678,12 @@ static void CutterSubmitMesh(ARRLIST_CutterTriangle* mesh) {
 static void UpdateCutterPanel(float width, float height) {
     if (!g_edited || !g_override_geometry) return;
     g_edited = FALSE;
-    ARRLIST_CutterTriangle mesh = { 0 };
+    CutterMesh mesh = { 0 };
     CutterCreateCube(&mesh);
     CutterApplyFacets(&mesh, &g_pavillion_facets, TRUE);
     CutterApplyFacets(&mesh, &g_crown_facets, FALSE);
     CutterSubmitMesh(&mesh);
-    ARRLIST_CutterTriangle_clear(&mesh);
+    CutterClearMesh(&mesh);
 }
 
 static void DrawCutterPanel(float width, float height) {
