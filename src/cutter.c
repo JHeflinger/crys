@@ -74,6 +74,7 @@ typedef struct {
     float angle;
     float depth;
     size_t index;
+    size_t offset;
     SymmetryType symmetry;
 } Facet;
 DECLARE_ARRLIST(Facet);
@@ -123,7 +124,7 @@ static void DrawAddFacetButton(ARRLIST_Facet* list, size_t index) {
     if (mhovered) {
         DrawRectangle(UIGetCursor().x + 5, UIGetCursor().y + 5, 10, 10, (Color){ 255, 255, 255, 150 });
         if (InputButtonPressed(IK_MOUSELEFT)) {
-            ARRLIST_Facet_insert(list, (Facet){ "", 45.0f, 0.0f, 12, RADIAL_SYMMETRY }, index);
+            ARRLIST_Facet_insert(list, (Facet){ "", 45.0f, 0.0f, 12, 0, RADIAL_SYMMETRY }, index);
             g_edited = TRUE;
         }
     }
@@ -202,11 +203,21 @@ static void DrawPavillionSection(size_t width, void* param) {
             MappedColor(UI_TEXT_COLOR));
         UIMoveCursor(20, 0);
         if (s_activated == i) {
-            g_edited |= UIDragFloat(&(g_pavillion_facets.data[i].depth), 0, 1.0f, 0.01f, 50);
+            g_edited |= UIDragFloat(&(g_pavillion_facets.data[i].depth), -FLT_MAX, FLT_MAX, 0.001f, 50);
         } else {
             UIDrawText("%.3f", g_pavillion_facets.data[i].depth);
         }
-        UIMoveCursor(20 + UITextWidth(nbuffer) + 5 + llen + 50 + 10 + 70 + 80, -LINE_HEIGHT);
+        UIMoveCursor(20 + UITextWidth(nbuffer) + 5 + llen + 50 + 10 + 70 + 70, -LINE_HEIGHT);
+        if (g_pavillion_facets.data[i].offset > g_index_values[(size_t)g_index_type]) g_pavillion_facets.data[i].offset = g_index_values[(size_t)g_index_type];
+        DrawCircle(UIGetCursor().x + 10, UIGetCursor().y + 10, 5, MappedColor(UI_TEXT_COLOR));
+        DrawRectanglePro((Rectangle){ UIGetCursor().x + 10, UIGetCursor().y + 10, 2, 8 }, (Vector2){ 1, 8 }, IndexToDegree(g_pavillion_facets.data[i].offset), MappedColor(UI_TEXT_COLOR));
+        UIMoveCursor(20, 0);
+        if (s_activated == i) {
+            g_edited |= UIDragSize(&(g_pavillion_facets.data[i].offset), 0, g_index_values[(size_t)g_index_type], 1, 50);
+        } else {
+            UIDrawText("%d", (int)g_pavillion_facets.data[i].offset);
+        }
+        UIMoveCursor(20 + UITextWidth(nbuffer) + 5 + llen + 50 + 10 + 70 + 70 + 80, -LINE_HEIGHT);
         if (s_activated == i) {
             UIDropdownMenu(100, 4, g_symmetry_names, DropdownSelectSymmetry, &(g_pavillion_facets.data[i].symmetry));
         } else {
@@ -275,11 +286,21 @@ static void DrawCrownSection(size_t width, void* param) {
             MappedColor(UI_TEXT_COLOR));
         UIMoveCursor(20, 0);
         if (s_activated == i) {
-            g_edited |= UIDragFloat(&(g_crown_facets.data[i].depth), 0, 1.0f, 0.01f, 50);
+            g_edited |= UIDragFloat(&(g_crown_facets.data[i].depth), -FLT_MAX, FLT_MAX, 0.001f, 50);
         } else {
             UIDrawText("%.3f", g_crown_facets.data[i].depth);
         }
-        UIMoveCursor(20 + UITextWidth(nbuffer) + 5 + llen + 50 + 10 + 70 + 80, -LINE_HEIGHT);
+        UIMoveCursor(20 + UITextWidth(nbuffer) + 5 + llen + 50 + 10 + 70 + 70, -LINE_HEIGHT);
+        if (g_crown_facets.data[i].offset > g_index_values[(size_t)g_index_type]) g_crown_facets.data[i].offset = g_index_values[(size_t)g_index_type];
+        DrawCircle(UIGetCursor().x + 10, UIGetCursor().y + 10, 5, MappedColor(UI_TEXT_COLOR));
+        DrawRectanglePro((Rectangle){ UIGetCursor().x + 10, UIGetCursor().y + 10, 2, 8 }, (Vector2){ 1, 8 }, IndexToDegree(g_crown_facets.data[i].offset), MappedColor(UI_TEXT_COLOR));
+        UIMoveCursor(20, 0);
+        if (s_activated == i) {
+            g_edited |= UIDragSize(&(g_crown_facets.data[i].offset), 0, g_index_values[(size_t)g_index_type], 1, 50);
+        } else {
+            UIDrawText("%d", (int)g_crown_facets.data[i].offset);
+        }
+        UIMoveCursor(20 + UITextWidth(nbuffer) + 5 + llen + 50 + 10 + 70 + 70 + 80, -LINE_HEIGHT);
         if (s_activated == i) {
             UIDropdownMenu(100, 4, g_symmetry_names, DropdownSelectSymmetry, &(g_crown_facets.data[i].symmetry));
         } else {
@@ -304,7 +325,6 @@ static size_t CutterAddVertex(CutterMesh* mesh, vec3 position) {
     return id;
 }
 
-
 static size_t CutterAddFace(CutterMesh* mesh, const size_t* vertices, size_t count, MaterialID material) {
     EZ_ASSERT(count >= 3, "Cannot create cutter face with fewer than 3 vertices");
     EZ_ASSERT(count <= CUT_MAX_FACE_VERTS, "Cutter face vertex limit exceeded");
@@ -317,7 +337,6 @@ static size_t CutterAddFace(CutterMesh* mesh, const size_t* vertices, size_t cou
     ARRLIST_CutterFace_add(&mesh->faces, face);
     return id;
 }
-
 
 static void CutterClearMesh(CutterMesh* mesh) {
     ARRLIST_CutterVertex_clear(&mesh->vertices);
@@ -334,7 +353,6 @@ static void CutterCanonicalEdge(size_t a, size_t b, CutterEdgeKey* out) {
     }
 }
 
-
 static BOOL CutterFindIntersection(ARRLIST_CutterIntersection* intersections, CutterEdgeKey edge, size_t* vertex) {
     for (size_t i = 0; i < intersections->size; i++) {
         CutterIntersection* intersection = &intersections->data[i];
@@ -345,7 +363,6 @@ static BOOL CutterFindIntersection(ARRLIST_CutterIntersection* intersections, Cu
     }
     return FALSE;
 }
-
 
 static size_t CutterGetIntersection(CutterMesh* mesh, ARRLIST_CutterIntersection* intersections, CutterPlane plane, size_t a, size_t b) {
     CutterEdgeKey edge;
@@ -421,7 +438,6 @@ static BOOL CutterContainsVertex(size_t* vertices, size_t count, size_t vertex) 
     }
     return FALSE;
 }
-
 
 static void CutterAddCapVertex(CutterMesh* mesh, CutterPlane plane, size_t* cap_vertices, size_t* cap_count, size_t vertex) {
     if (CutterContainsVertex(cap_vertices, *cap_count, vertex)) return;
@@ -571,29 +587,30 @@ static size_t CutterFacetIndices(const Facet* facet, size_t* output) {
     size_t wheel = g_index_values[(size_t)g_index_type];
     size_t count = 0;
     size_t index = facet->index % wheel;
+    size_t offset = facet->offset;
     switch (facet->symmetry) {
         case NO_SYMMETRY:
-            CutterAddUniqueIndex(output, &count, index, wheel);
+            CutterAddUniqueIndex(output, &count, index + offset, wheel);
             break;
         case RADIAL_SYMMETRY:
             if (index == 0) {
-                CutterAddUniqueIndex(output, &count, 0, wheel);
+                CutterAddUniqueIndex(output, &count, 0 + offset, wheel);
                 break;
             }
             for (size_t i = index; i <= wheel; i += index) {
-                CutterAddUniqueIndex(output, &count, i, wheel);
+                CutterAddUniqueIndex(output, &count, i + offset, wheel);
             }
             break;
         case DUAL_SYMMETRY:
-            CutterAddUniqueIndex(output, &count, index, wheel);
-            CutterAddUniqueIndex(output, &count, (wheel - index) % wheel, wheel);
+            CutterAddUniqueIndex(output, &count, index + offset, wheel);
+            CutterAddUniqueIndex(output, &count, ((wheel - index) % wheel) + offset, wheel);
             break;
         case QUAD_SYMMETRY: {
             size_t half = wheel / 2;
-            CutterAddUniqueIndex(output, &count, index, wheel);
-            CutterAddUniqueIndex(output, &count, (wheel - index) % wheel, wheel);
-            CutterAddUniqueIndex(output, &count, (index + half) % wheel, wheel);
-            CutterAddUniqueIndex(output, &count, (half + wheel - index) % wheel, wheel);
+            CutterAddUniqueIndex(output, &count, index + offset, wheel);
+            CutterAddUniqueIndex(output, &count, ((wheel - index) % wheel) + offset, wheel);
+            CutterAddUniqueIndex(output, &count, ((index + half) % wheel) + offset, wheel);
+            CutterAddUniqueIndex(output, &count, ((half + wheel - index) % wheel) + offset, wheel);
             break;
         }
         default:
