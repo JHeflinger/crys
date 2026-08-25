@@ -3,9 +3,13 @@
 #include "renderer/renderer.h"
 #include "renderer/rmath.h"
 #include <core/entrypoint.h>
+#include <util/logger.h>
 #include <data/colors.h>
 #include <data/input.h>
+#include <easyfile.h>
+#include <raymath.h>
 #include <math.h>
+#include <nfd.h>
 
 #define MAX_BLUEPRINT_NAME_SIZE 2048
 #define CUT_EPSILON 0.000001f
@@ -89,6 +93,10 @@ static BOOL g_override_geometry = TRUE;
 static ARRLIST_Facet g_pavillion_facets = { 0 };
 static ARRLIST_Facet g_crown_facets = { 0 };
 static BOOL g_edited = FALSE;
+static Vector3 g_stone_dims = { 1.0f, 1.0f, 1.0f };
+static size_t g_facetcount = 0;
+static Vector3 g_enclosure = { 0 };
+static char g_savepath[2048] = "____DOES_NOT_EXIST____";
 
 static size_t DropdownSelectIndexWheel(void* data, size_t index, BOOL cancel) {
     if (index == (size_t)-1) {
@@ -540,14 +548,14 @@ static void CutterCutPlane(CutterMesh* mesh, CutterPlane plane) {
 
 static void CutterCreateCube(CutterMesh* mesh) {
     vec3 positions[8] = {
-        { -1.0f, -1.0f, -1.0f },
-        { -1.0f,  1.0f, -1.0f },
-        {  1.0f,  1.0f, -1.0f },
-        {  1.0f, -1.0f, -1.0f },
-        { -1.0f, -1.0f,  1.0f },
-        { -1.0f,  1.0f,  1.0f },
-        {  1.0f,  1.0f,  1.0f },
-        {  1.0f, -1.0f,  1.0f }
+        { -g_stone_dims.x, -g_stone_dims.y, -g_stone_dims.z },
+        { -g_stone_dims.x,  g_stone_dims.y, -g_stone_dims.z },
+        {  g_stone_dims.x,  g_stone_dims.y, -g_stone_dims.z },
+        {  g_stone_dims.x, -g_stone_dims.y, -g_stone_dims.z },
+        { -g_stone_dims.x, -g_stone_dims.y,  g_stone_dims.z },
+        { -g_stone_dims.x,  g_stone_dims.y,  g_stone_dims.z },
+        {  g_stone_dims.x,  g_stone_dims.y,  g_stone_dims.z },
+        {  g_stone_dims.x, -g_stone_dims.y,  g_stone_dims.z }
     };
     for (size_t i = 0; i < 8; i++) CutterAddVertex(mesh, positions[i]);
     size_t faces[6][4] = {
@@ -641,12 +649,20 @@ static void CutterSubmitMesh(CutterMesh* mesh) {
     for (size_t i = 0; i < mesh->vertices.size; i++) {
         SubmitVertex(mesh->vertices.data[i].position);
     }
+    vec3 fmin = { FLT_MAX, FLT_MAX, FLT_MAX };
+    vec3 fmax = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
     for (size_t i = 0; i < mesh->faces.size; i++) {
         CutterFace* face = &mesh->faces.data[i];
         for (size_t j = 1; j + 1 < face->count; j++) {
             VertexID a = vertex_base + face->vertices[0];
             VertexID b = vertex_base + face->vertices[j];
             VertexID c = vertex_base + face->vertices[j + 1];
+            glm_vec3_minv(fmin, VertexReference(a), fmin);
+            glm_vec3_maxv(fmax, VertexReference(a), fmax);
+            glm_vec3_minv(fmin, VertexReference(b), fmin);
+            glm_vec3_maxv(fmax, VertexReference(b), fmax);
+            glm_vec3_minv(fmin, VertexReference(c), fmin);
+            glm_vec3_maxv(fmax, VertexReference(c), fmax);
             SubmitTriangle((Triangle){
                 a, b, c,
                 (VertexID)-1,
@@ -656,6 +672,7 @@ static void CutterSubmitMesh(CutterMesh* mesh) {
             });
         }
     }
+    g_enclosure = (Vector3){ fmax[0] - fmin[0], fmax[1] - fmin[1], fmax[2] - fmin[2] };
     if (mesh->vertices.size > 0 && mesh->faces.size > 0) {
         vec3 min = { FLT_MAX, FLT_MAX, FLT_MAX };
         vec3 max = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
@@ -700,13 +717,48 @@ static void UpdateCutterPanel(float width, float height) {
     CutterApplyFacets(&mesh, &g_pavillion_facets, TRUE);
     CutterApplyFacets(&mesh, &g_crown_facets, FALSE);
     CutterSubmitMesh(&mesh);
+    g_facetcount = mesh.faces.size;
     CutterClearMesh(&mesh);
+}
+
+static void SaveCutterDesign() {
+    FILE* file = fopen(g_savepath, "wb");
+    fwrite(g_cut_name, MAX_BLUEPRINT_NAME_SIZE, 1, file);
+    fwrite(&g_index_type, sizeof(IndexWheelType), 1, file);
+    fwrite(&g_override_geometry, sizeof(BOOL), 1, file);
+    fwrite(&g_stone_dims, sizeof(Vector3), 1, file);
+    fwrite(&g_pavillion_facets, sizeof(ARRLIST_Facet), 1, file);
+    fwrite(g_pavillion_facets.data, sizeof(Facet), g_pavillion_facets.size, file);
+    fwrite(&g_crown_facets, sizeof(ARRLIST_Facet), 1, file);
+    fwrite(g_crown_facets.data, sizeof(Facet), g_crown_facets.size, file);
+    fclose(file);
+    loginfo("Successfully saved stone design to \"%s\"", g_savepath);
+}
+
+static void LoadCutterDesign() {
+    FILE* file = fopen(g_savepath, "rb");
+    fread(g_cut_name, MAX_BLUEPRINT_NAME_SIZE, 1, file);
+    fread(&g_index_type, sizeof(IndexWheelType), 1, file);
+    fread(&g_override_geometry, sizeof(BOOL), 1, file);
+    fread(&g_stone_dims, sizeof(Vector3), 1, file);
+    ARRLIST_Facet_clear(&g_pavillion_facets);
+    ARRLIST_Facet_clear(&g_crown_facets);
+    fread(&g_pavillion_facets, sizeof(ARRLIST_Facet), 1, file);
+    g_pavillion_facets.data = EZ_ALLOC(sizeof(Facet), g_pavillion_facets.size);
+    fread(g_pavillion_facets.data, sizeof(Facet), g_pavillion_facets.size, file);
+    fread(&g_crown_facets, sizeof(ARRLIST_Facet), 1, file);
+    g_crown_facets.data = EZ_ALLOC(sizeof(Facet), g_crown_facets.size);
+    fread(g_crown_facets.data, sizeof(Facet), g_crown_facets.size, file);
+    fclose(file);
+    g_edited = TRUE;
+    loginfo("Successfully loaded stone design from \"%s\"", g_savepath);
 }
 
 static void DrawCutterPanel(float width, float height) {
     g_edited = FALSE;
     float boxwidth = width - 20 - 160;
     float boxstride = width - boxwidth - 20;
+    float component_width = (width - 20 - 160 - (3 * 16) - (2 * 10)) / 3.0f;
     UITextInput("Name", g_cut_name, MAX_BLUEPRINT_NAME_SIZE, width - 20, FALSE);
     UIDivider(width - 20);
     UIDrawText("Index Wheel");
@@ -717,24 +769,95 @@ static void DrawCutterPanel(float width, float height) {
     BOOL old = g_override_geometry;
     UICheckbox(&g_override_geometry);
     if (!old && g_override_geometry) g_edited = TRUE;
+    UIDrawText("Base Stone");
+    UIMoveCursor(boxstride + 7, 5 - LINE_HEIGHT);
+    DrawRectangle(UIGetCursor().x - 5, UIGetCursor().y + 1, 20, 18, RED);
+    if (CheckCollisionPointRec(Vector2Subtract(GetMousePosition(), UIGetPosition()), (Rectangle){UIGetCursor().x - 5, UIGetCursor().y + 1, 20, 18}) &&
+        InputButtonPressed(IK_MOUSELEFT)) {
+        g_stone_dims.x = 1.0f;
+    }
+    UIDrawText("x");
+    UIMoveCursor(boxstride + 19, -20);
+    g_edited |= UIDragFloat(&(g_stone_dims.x), -FLT_MAX, FLT_MAX, 0.1f, component_width);
+    UIMoveCursor(boxstride + component_width + 33, -20);
+    DrawRectangle(UIGetCursor().x - 5, UIGetCursor().y + 1, 20, 18, GREEN);
+    if (CheckCollisionPointRec(Vector2Subtract(GetMousePosition(), UIGetPosition()), (Rectangle){UIGetCursor().x - 5, UIGetCursor().y + 1, 20, 18}) &&
+        InputButtonPressed(IK_MOUSELEFT)) {
+        g_stone_dims.y = 1.0f;
+    }
+    UIDrawText("y");
+    UIMoveCursor(boxstride + component_width + 44, -20);
+    g_edited |= UIDragFloat(&(g_stone_dims.y), -FLT_MAX, FLT_MAX, 0.1f, component_width);
+    UIMoveCursor(boxstride + (2*component_width) + 58, -20);
+    DrawRectangle(UIGetCursor().x - 5, UIGetCursor().y + 1, 20, 18, BLUE);
+    if (CheckCollisionPointRec(Vector2Subtract(GetMousePosition(), UIGetPosition()), (Rectangle){UIGetCursor().x - 5, UIGetCursor().y + 1, 20, 18}) &&
+        InputButtonPressed(IK_MOUSELEFT)) {
+        g_stone_dims.z = 1.0f;
+    }
+    UIDrawText("z");
+    UIMoveCursor(boxstride + (2*component_width) + 69, -20);
+    g_edited |= UIDragFloat(&(g_stone_dims.z), -FLT_MAX, FLT_MAX, 0.1f, component_width);
+    float cri_ri = 1.0f;
+    for (size_t i = 0; i < g_pavillion_facets.size; i++) {
+        float ri = 1.0f / sinf(g_pavillion_facets.data[i].angle * M_PI / 180.0f);
+        if (ri > cri_ri) cri_ri = ri;
+    }
     UIDrawText("Stats");
     UIMoveCursor(boxstride + 5, -LINE_HEIGHT + 5);
-    DrawRectangle(UIGetCursor().x - 5, UIGetCursor().y - 2, boxwidth, LINE_HEIGHT * 4 + 4, (Color){ 255, 255, 255, 120 });
-    UIDrawText("L/W/H Ratio: ?/?/?");
+    DrawRectangle(UIGetCursor().x - 5, UIGetCursor().y - 2, boxwidth, LINE_HEIGHT * 3 + 4, (Color){ 255, 255, 255, 120 });
+    UIDrawText("L/W/H Ratio: 1.00 / %.2f / %.2f", g_enclosure.y / g_enclosure.x, g_enclosure.z / g_enclosure.x);
     UIMoveCursor(boxstride + 5, 0);
-    UIDrawText("Preservation: 54.78%%");
+    UIDrawText("Facets: %d", (int)g_facetcount);
     UIMoveCursor(boxstride + 5, 0);
-    UIDrawText("Facets: 18");
-    UIMoveCursor(boxstride + 5, 0);
-    UIDrawText("Critical RI: 1.56");
+    UIDrawText("Critical RI: %.2f", cri_ri);
     UIMoveCursor(0, 2);
     UIDivider(width - 20);
     UIDropdownSection("Pavillion", width - 20, DrawPavillionSection, NULL);
     UIDropdownSection("Crown", width - 20, DrawCrownSection, NULL);
     UIDivider(width - 20);
-    UIDrawText("Import");
-    UIDrawText("Export");
-    UIDrawText("Save As...");
+    float bw = (width - 20 - 20) / 3.0f;
+    if (UIButton("Save", bw)) {
+        if (ez_file_exists(g_savepath)) {
+            SaveCutterDesign();
+        } else {
+            nfdchar_t* outpath = NULL;
+            nfdresult_t result = NFD_SaveDialog("crys", NULL, &outpath);
+            if (result == NFD_OKAY) {
+                sprintf(g_savepath, "%s%s", outpath, strstr(outpath, ".crys") ? "" : ".crys");
+                SaveCutterDesign();
+            } else if (result == NFD_CANCEL) {
+                logtrace("Save cancelled by user");
+            } else {
+                logerror("Unable to save file due to NFD error: %s", NFD_GetError());
+            }
+        }
+    }
+    UIMoveCursor(bw + 10, -LINE_HEIGHT);
+    if (UIButton("Save As...", bw)) {
+        nfdchar_t* outpath = NULL;
+        nfdresult_t result = NFD_SaveDialog("crys", NULL, &outpath);
+        if (result == NFD_OKAY) {
+            sprintf(g_savepath, "%s%s", outpath, strstr(outpath, ".crys") ? "" : ".crys");
+            SaveCutterDesign();
+        } else if (result == NFD_CANCEL) {
+            logtrace("Save cancelled by user");
+        } else {
+            logerror("Unable to save file due to NFD error: %s", NFD_GetError());
+        }
+    }
+    UIMoveCursor(bw + 10 + bw + 10, -LINE_HEIGHT);
+    if (UIButton("Load", bw)) {
+        nfdchar_t* outpath = NULL;
+        nfdresult_t result = NFD_OpenDialog("crys", NULL, &outpath);
+        if (result == NFD_OKAY) {
+            sprintf(g_savepath, "%s%s", outpath, strstr(outpath, ".crys") ? "" : ".crys");
+            LoadCutterDesign();
+        } else if (result == NFD_CANCEL) {
+            logtrace("Load cancelled by user");
+        } else {
+            logerror("Unable to open file due to NFD error: %s", NFD_GetError());
+        }
+    }
 }
 
 static void CleanCutterPanel() {
