@@ -778,7 +778,7 @@ static void DrawCutterPanel(float width, float height) {
     }
     UIDrawText("x");
     UIMoveCursor(boxstride + 19, -20);
-    g_edited |= UIDragFloat(&(g_stone_dims.x), -FLT_MAX, FLT_MAX, 0.1f, component_width);
+    g_edited |= UIDragFloat(&(g_stone_dims.x), -FLT_MAX, FLT_MAX, 0.001f, component_width);
     UIMoveCursor(boxstride + component_width + 33, -20);
     DrawRectangle(UIGetCursor().x - 5, UIGetCursor().y + 1, 20, 18, GREEN);
     if (CheckCollisionPointRec(Vector2Subtract(GetMousePosition(), UIGetPosition()), (Rectangle){UIGetCursor().x - 5, UIGetCursor().y + 1, 20, 18}) &&
@@ -787,7 +787,7 @@ static void DrawCutterPanel(float width, float height) {
     }
     UIDrawText("y");
     UIMoveCursor(boxstride + component_width + 44, -20);
-    g_edited |= UIDragFloat(&(g_stone_dims.y), -FLT_MAX, FLT_MAX, 0.1f, component_width);
+    g_edited |= UIDragFloat(&(g_stone_dims.y), -FLT_MAX, FLT_MAX, 0.001f, component_width);
     UIMoveCursor(boxstride + (2*component_width) + 58, -20);
     DrawRectangle(UIGetCursor().x - 5, UIGetCursor().y + 1, 20, 18, BLUE);
     if (CheckCollisionPointRec(Vector2Subtract(GetMousePosition(), UIGetPosition()), (Rectangle){UIGetCursor().x - 5, UIGetCursor().y + 1, 20, 18}) &&
@@ -796,7 +796,7 @@ static void DrawCutterPanel(float width, float height) {
     }
     UIDrawText("z");
     UIMoveCursor(boxstride + (2*component_width) + 69, -20);
-    g_edited |= UIDragFloat(&(g_stone_dims.z), -FLT_MAX, FLT_MAX, 0.1f, component_width);
+    g_edited |= UIDragFloat(&(g_stone_dims.z), -FLT_MAX, FLT_MAX, 0.001f, component_width);
     float cri_ri = 1.0f;
     for (size_t i = 0; i < g_pavillion_facets.size; i++) {
         float ri = 1.0f / sinf(g_pavillion_facets.data[i].angle * M_PI / 180.0f);
